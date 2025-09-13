@@ -1,0 +1,93 @@
+---
+title: "Anomaly Inclass"
+author: "<your name here>"
+date: "October 29, 2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+`
+
+```{r, setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE) #global setting in knitting to show code all through the knitting 
+knitr::opts_knit$set(root.dir = "C:\\Users\\rbapna\\Dropbox\\NYUPredModelingCourse\\________Fall2025\\labs\\lab3-People Analytics at Call Center")
+
+```
+
+
+
+# Anomaly vs Outlier Detection
+Recall that the distinction between Anomaly and Outlier detection is not so much in the methodological approach taken, but more in the process that generated the data. Detecting the potential existence of an different (anomalous) process that generates some subset of your data is the goal of anomaly detection, which means that sometimes the underlying analytical challenge is anomaly detection. In the walk through we will not distinguish between outlier and anomaly detection until the last section, where we will focus on anomalous pattern detection which by definition assumes there is a anomalous process (or an even which shifts the normal behavior) generating a subset of data.
+
+# Local Outlier Factor
+```{r, include=FALSE}
+#always install before connecting to library
+#to install use 'packages-.Install' in the right.
+
+install.packages("devtools") # Install devtools if you haven't already
+library(devtools)
+install_github("ltorgo/DMwR2", ref = "master")
+# LOF library
+library(Rlof)
+library(DMwR2)
+library(dplyr)
+library(skimr)
+library(DMwR2)
+```
+
+We will first investigate using a density based outlier detection approach known as Local Ouliter Factor (LOF), which we dicussed in class. We are going to use a dataset of 400 call center employees, and our goal is to identify outliers among this group given their job performance data. After loading the data, do some investigate the data structure and conduct some simple explorations
+#```{r}
+#```{r message = FALSE, results = FALSE, results = 'hide'}
+# Read source data
+```{r, include=FALSE}
+
+callCenter <- read.csv("Call-center.csv")
+
+```
+
+Remember density based ouliter detection is based on distances, and this means we should normalize our data. Recall tha the `scale` function will be useful for this
+```{r}
+#lets look at summary stats
+skim(callCenter[,2:11])
+# Normalize the data using the scale() function -- for each observation, this subtracts the column's mean and divides by the column's standard deviation
+#column 1 is employer ID so it is not notmalized.
+#scale returns a matrix, so data.frame converts that matrix to a data frame, which is stored in callCenterSc
+callCenterSc <- data.frame(scale(callCenter[2:11]))
+skim(callCenterSc)
+```
+
+Next we want to use the `lof` function to calculate the local outlier factor (lof). Let us choose k = 5 Nearest Neighbors and plot the density of the scores.
+```{r}
+#Calculate the outlier scores
+#lofactor - the parameter 5 indicates 5 nearest neight bours
+#outlier.scores  contains the lof for ecah row in the lofactor dataframe
+outlier.scores <- lofactor(callCenterSc,5) #there is also a fucntion called lof() from the Rlof library. 
+
+#plot score density
+plot(density(outlier.scores))
+```
+
+
+Consider the employees for which lof > 1.5. A value of 1 signifies that a node and its neighbors are similarly distant from each other. 
+```{r}
+callCenter[which(outlier.scores > 1.5),]
+
+# or
+#this is the deep layer way of doing this - BETTER
+#here the employer ID is joined to the result of filter(outlier.scores > 1.5) 
+callCenter %>% filter(outlier.scores > 1.5)
+
+#an equivalent is (old way of doing the above)
+filter(callCenter, outlier.scores > 1.5)
+```
+
+There should be two outlier employees, based on their values give some intuitions for why you think they they are outliers?
+
+** Answer: ** One has especially generous and flexible performance and the other's performance lags across multiple dimensions.
+
+```{r}
+
+# we compare the dimensions of the outliers (eg sick dateys taken on fridays, emp dev hours etc) to the averages from teh command below
+skim(callCenter)
+```
