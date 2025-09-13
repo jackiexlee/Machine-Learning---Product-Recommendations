@@ -1,0 +1,231 @@
+---
+title: "Online dating"
+subtitle: "Predictions using Text"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    toc: yes
+    toc_depth: '3'
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 3
+---
+
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir ="C:\\Users\\rbapna\\Dropbox\\NYUPredModelingCourse\\labs\\Lab15 - HTE-CausalForest")
+
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+## Load the required libraries
+library(grf)  # Used to run causal forests
+library(caret) # used for various predictive models
+library(rpart.plot) # used to plot decision tree
+
+```
+
+# 1. Data Preparation
+
+## 1.1 Loading data 
+
+Any variable suffixed with a _1 is for the pre-treatment month.
+Any variable suffixed with a _2 is for the treatment month. 
+
+
+```{r, warning=FALSE, message=FALSE}
+#read the input file
+data <- read.csv('focal_user_df_females.csv',head=TRUE)
+
+#number of rows
+nrow(data)
+
+# column names
+colnames(data)
+```
+
+
+Mainpulation = 1 means users were in treatment, = 0 means they were in control
+
+Lets subset variables of interest here for two outcomes, matches sent, and total matches (= matches sent + recieved), and other demographics for heterogenous treatment effect, such as race, age, height.
+
+```{r, warning=FALSE, message=FALSE}
+vars <- c("manipulation", "match_sent_cnt_1", "match_sent_cnt_2", "match_rcvd_cnt_1", "match_rcvd_cnt_2", "black", "asian", "mideast", "white", "latin", "indian",
+          "age_raw", "height_in_raw")
+data <- data[vars]
+#can use below for AA test
+data["total_match_cnt_1"] <- data["match_sent_cnt_1"] + data["match_rcvd_cnt_1"]
+data["total_match_cnt_2"] <- data["match_sent_cnt_2"] + data["match_rcvd_cnt_2"]
+
+```
+
+Some data engineering -- dealing with NAs in height
+```{r, warning=FALSE, message=FALSE}
+data$height_in_raw[is.na(data$height_in_raw)] <- median(data$height_in_raw, na.rm = T)
+
+data[is.na(data)] <- 0
+```
+
+See distribution of treatment assignment?
+
+
+```{r, warning=FALSE, message=FALSE}
+table(data$manipulation)
+
+```
+
+
+# 2. Descriptive analysis 
+Is there any pre existing difference between treatment and control?
+Note match_sent_cnt_1 is pre-treatment month.
+match_sent_cnt_2 is treatment month (anything with suffux 2 is treatment month)
+
+
+```{r, warning=FALSE, message=FALSE}
+
+treatment <- subset(data, manipulation == 1)
+control <-subset(data, manipulation == 0)
+
+mean(treatment$age_raw)
+mean(control$age_raw)
+
+t.test(treatment$age_raw,control$age_raw)
+t.test(treatment$height_in_raw,control$height_in_raw)
+t.test(treatment$asian,control$asian)
+t.test(treatment$white,control$white)
+
+t.test(treatment$match_sent_cnt_1,control$match_sent_cnt_1)
+# Estimate ATE
+t.test(treatment$match_sent_cnt_2,control$match_sent_cnt_2)
+
+t.test(treatment$total_match_cnt_1,control$total_match_cnt_1)
+t.test(treatment$total_match_cnt_2,control$total_match_cnt_2)
+```
+
+We can use regression to analyze AB test reuslts
+
+```{r, warning=FALSE, message=FALSE}
+
+mean(treatment$match_sent_cnt_2)
+mean(control$match_sent_cnt_2)
+
+model1 <- lm(match_sent_cnt_2 ~ manipulation, data = data)
+model2 <- lm(match_sent_cnt_2 ~ manipulation + age_raw + height_in_raw, data = data)
+model3 <- lm(match_sent_cnt_2 ~ manipulation + age_raw + height_in_raw +
+               black + asian + mideast + white + latin + indian, data = data)
+
+print(summary(model3))
+```
+
+But before that, we need to split the data into train and test group so that we can measure and compare the performance of the models.
+
+**Splitting the data**
+
+```{r, warning=FALSE, message=FALSE}
+
+# randomly select row numbers for training data set
+set.seed(123)
+smp_size <- floor(0.75 * nrow(data))
+train_ind <- sample(seq_len(nrow(data)), size = smp_size)
+
+data.train <- data[train_ind,]
+data.test <- data[-train_ind,]
+
+```
+
+
+# 4. Causal forests
+
+```{r }
+
+# Isolate the "treatment" as a matrix
+manipulation <- as.matrix(data.train$manipulation)
+
+# Isolate the outcome as a matrix
+total_match_cnt_2 <- as.matrix(data.train$total_match_cnt_2)
+
+# Use model.matrix to get our predictor matrix
+
+X <- model.matrix(lm(total_match_cnt_2 ~ -1 + black + asian + mideast + white + latin + indian +
+                     age_raw + height_in_raw, data = data.train))
+
+# Estimate causal forest
+cf <- causal_forest(X,total_match_cnt_2,manipulation, num.trees = 5000)
+
+```
+
+```{r }
+
+# Get predicted causal effects for each observation
+effects <- predict(cf, estimate.variance = TRUE)
+
+summary(effects$predictions)
+```
+
+```{r }
+
+# And use test X's for prediction
+X.test <- model.matrix(lm(total_match_cnt_2 ~ -1 + + black + asian + mideast + white + latin + indian + age_raw + height_in_raw, data = data.test))
+
+# And get effects
+effects.test <- predict(cf, X.test, estimate.variance = TRUE)
+
+
+```
+
+## 2.2 Decision Tree
+
+
+```{r }
+
+## Decision Tree Classification 
+
+
+# Cross validation
+cross_validation <- trainControl(## 10-fold CV
+  method = "repeatedcv",
+  number = 10,
+  ## repeated three times
+  repeats = 3)
+# Hyperparamter tuning
+# maxdepth =  the maximum depth of the tree that will be created or
+# the length of the longest path from the tree root to a leaf.
+
+Param_Grid <-  expand.grid(maxdepth = 2:3)
+
+dtree_fit <- train(data.train[c("black", "asian", "mideast", "white", 
+                  "latin", "indian","age_raw", "height_in_raw")],
+                   effects$predictions, 
+                   method = "rpart2",
+                   # split - criteria to split nodes
+                   parms = list(split = "gini"),
+                   tuneGrid = Param_Grid)
+
+# check the accuracy for different models
+dtree_fit
+```
+
+
+```{r }
+# print the final model
+dtree_fit$finalModel
+
+```
+
+
+```{r }
+# Plot decision tree
+prp(dtree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+```
+
+
+
+# 4. Conclusions
+
+In this tutorial, we learned how to estimate heterogenous treatment effects from an AB test in online dating.
+
+
