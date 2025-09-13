@@ -1,0 +1,226 @@
+---
+title: "Classic Retail Customer Segmentation"
+author: "Prof B"
+date: "2/18/2021"
+output: html_document
+---
+
+
+
+#Introduction
+
+Recency, frequency and monetary value of purchase are classic marketing variables that are used often in what is called 'RFM Customer Segmentation.' In addition we also have data on the duration of the customer's relationship with the firm. Lets do some data driven segmentation on this dataset using k-means clustering. 
+
+
+#Data Ingestion
+
+We begin by loading the packages required for our analysis, with the code below:
+
+```{r message = FALSE, results = FALSE, results = 'hide'}
+
+#If document rendering becomes time consuming due to long computations you can use knitr caching to improve performance.
+library(knitr) #knitr is a general-purpose package for dynamic report generation in R
+opts_chunk$set(cache = TRUE) # this will cache all chunks
+
+required_packages = c( 
+  # Add to this list the packages that you will use - if unavailable, it will be 
+  # automatically installed
+  
+  "rmarkdown", 
+  "dplyr",
+  "readr",
+  "tidyr",
+  "knitr",
+  "data.table",
+  "lubridate",
+  "rlang",
+  "ggplot2",
+  "cluster",
+  "skimr", 
+  "GGally"
+    )
+
+packages_to_install = required_packages[!(required_packages %in% 
+                                                installed.packages()[, 1])]
+    
+if (length(packages_to_install) > 0) {
+  install.packages(packages_to_install)
+}
+
+suppressPackageStartupMessages({
+  sapply(required_packages, require, character.only = TRUE)
+})
+
+#Note: library(package) and require(package) both load the namespace of the package with name package and attach it on the search list. require is designed for use inside other functions; it returns FALSE and gives a warning (rather than an error as library() does by default) if the package does not exist. 
+
+# Note: The sapply() function works like lapply(), which is listApply, but it tries to simplify the output to the most elementary data structure that is possible. And indeed, sapply() is a ‘wrapper’ function for lapply().
+```
+
+
+##Importing data
+
+We now import the data required for our analysis, using the `read_csv()` command from `readr` package. We import the two files as shown below:
+
+```{r message = FALSE, warning = FALSE}
+customerRFM <- read_csv('CA-customerData.csv')
+View(customerRFM)
+```
+
+
+##Data Structure & Summarization
+
+We first look at the structure of the table to get an idea about the variables and their data types:
+
+```{r}
+str(customerRFM)
+
+```
+
+Let us now look at the summary statistics of each of the table, using the `skim` command in R:
+
+```{r}
+skim(customerRFM)
+```
+
+
+
+##Missing value treatment (if necessary)
+
+#Data normalization
+
+
+##Min-max normalization
+
+One of the main requirements of clustering is that the variables used for clustering must be normalized, ie. the scale of all variables must be the same.
+
+For our dataset, we use a common normalization technique known as min-max normalization. The normalization function is as defined below:
+
+$$
+X' = \frac{X - X_{min}}{X_{max} - X_{min}}
+$$
+
+We define a function in R for the `min-max` normalization
+
+```{r}
+# Function to perform min-max normalization
+mmnormalize <- function(x){
+  n_max <- max(x, na.rm = TRUE)
+  n_min <- min(x, na.rm = TRUE)
+  mmnormalized <- (x - n_min)/(n_max - n_min)
+  return(mmnormalized)
+}
+```
+
+
+Now that we have the normalized dataset, we remove from our data the columns that will not be used for clustering, namely `ID#` 
+
+```{r}
+customerRFM_for_clustering <- select(customerRFM,-"ID#")
+customerRFM_for_clustering  <- mutate_all(customerRFM_for_clustering,.funs = mmnormalize)
+
+skim(customerRFM_for_clustering)
+
+```
+
+
+#Clustering
+
+**Cluster analysis** or **clustering** is the task of grouping a set of objects in such a way that objects in the same group (called a cluster) are more similar (in some sense or another) to each other than to those in other groups (clusters). It is a main task of exploratory data mining, and a common technique for statistical data analysis.
+
+There are various algorithms to perform clustering such as Hierarchical clustering, k-means, DBSCAN etc. We perform the **k-means** algorithm, as it is a simple and effective solution to most clustering problems:
+
+##k-means algorithm
+
+Let us evaluate what the ideal number of clusters is using the SSE curve:
+
+```{r warning = FALSE}
+SSE_curve <- c()
+for (n in 1:10) {
+    kcluster <- kmeans(customerRFM_for_clustering, centers = n, nstart = 10) #10 random starts
+    sse <- sum(kcluster$withinss)
+    SSE_curve[n] <- sse
+} # this loop will start from 1 cluster to 10 clusters and calculate the SSE for each value of k while choosing the best clustering
+
+print("SSE curve for the ideal k value")
+#plot(1:10, SSE_curve, type="b", xlab="Number of Clusters", ylab="SSE")
+ggplot(data = data.frame(k = 1:10, sse = SSE_curve), aes(x = k, y = sse)) + 
+  geom_line() + 
+  geom_point(size = 3) + 
+  ggtitle("SSE curve for different values of k") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_discrete(limits = 1:10) + 
+  xlab("Number of clusters")
+
+```
+
+We see that that the decrease in SSE stops being significant with `k` >= 4. Hence, we choose `k` = 4 as our desired number of clusters.
+
+```{r message = FALSE, warning = FALSE}
+# Set seed for reproducible results - this ensures that we get the same results
+# every time we run the code
+set.seed(42)
+
+#Perform k-means algorithm to identify 6 distinct clusters
+km_all <- kmeans(customerRFM_for_clustering,
+                 centers = 4,
+                 nstart = 10) #since we know the best is 4, we are setting centers = 4
+```
+
+Now that we have obtained our clusters, we add this information to our original dataset for further analysis.
+
+```{r}
+customerRFM <- bind_cols(customerRFM, data.frame(cluster = km_all$cluster))
+head(customerRFM) #add new column to original dataset with the cluster
+```
+
+
+
+#Segment Analysis
+
+We load the file that has the *cluster* attributed to each customer in the sampled data.
+
+```{r message = FALSE, warning = FALSE}
+segment_df <- customerRFM %>% 
+  mutate(segment = as.factor(cluster))
+
+
+segment_df$cluster <- as.factor(segment_df$cluster)
+```
+
+
+Let us visualise the percentage of customers in each segment. We visualize using the `ggplot()` function in R, from the powerful `ggplot2` package.
+
+```{r}
+ggplot(segment_df, aes(x = segment)) +
+  geom_bar(aes(y = (..count..)/sum(..count..), fill = segment)) + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Percentage of customers") + 
+  xlab("Segment")
+```
+
+Let us examine the 'centroid' of each cluster
+
+
+```{r}
+segment_summary <- segment_df %>% group_by(segment) %>% summarise(mean_monetary = mean(Monetary), 
+                                               mean_recency = mean(Recency),
+                                               mean_frequency = mean(Frequency),
+                                               mean_tenure = mean(tenure),
+                                               n = n())
+
+segment_summary
+```
+#Monetary 2 (294.7949) seems to be high spenders, average recency and high frequent spenders.
+
+
+Let us visualize this using a parallel coordinates plot
+
+```{r}
+
+ggparcoord(segment_summary,
+    columns = 2:5, groupColumn = 1) 
+```
+
+
+
+
