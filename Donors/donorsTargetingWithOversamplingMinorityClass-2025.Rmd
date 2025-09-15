@@ -1,0 +1,523 @@
+---
+title: "Veterans Organization = Donor Targeting"
+date: "10/27/2020"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    df_print: paged
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+---
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("C:\\Users\\rbapna\\Dropbox\\NYUPredModelingCourse\\labs\\lab6 - Attracting Donors to Veterans Campaigns")
+
+```
+
+
+```{r message=FALSE,  warning=FALSE}
+# load the required libraries
+library("readxl") # used to read excel files
+library("dplyr") # used for data munging 
+library("FNN") # used for knn regression (knn.reg function)
+library("caret") # used for various predictive models
+library("class") # for using confusion matrix function
+library("rpart.plot") # used to plot decision tree
+library("rpart")  # used for Regression tree
+library("glmnet") # used for Lasso and Ridge regression
+library('NeuralNetTools') # used to plot Neural Networks
+library("PRROC") # top plot ROC curve
+library("ROCR") # top plot lift curve
+library("tidyverse") #for read_csv() among other functions
+library("skimr")
+library("e1071")
+#install.packages("abind")
+#library("abind")
+
+#install.packages( "https://cran.r-project.org/src/contrib/Archive/DMwR/DMwR_0.4.1.tar.gz", repos=NULL, type="source" )
+#library("DMwR")
+```
+
+
+# 1. Classification
+
+
+## 1.1 Data loading and transformation
+we will find many categorical variables with lots of missing values. Will have to deal with them before building models
+
+```{r }
+# Load the Donors data set
+
+# Load the data and use the `col_types` argument to specify type of 
+# all columns ('n' stands for numerical and 'f' stands for factor).
+donors <- read_csv("donors.csv", col_types = "nnffnnnnnnnnffffffffff")
+
+# Get a preview of the data.
+glimpse(donors)
+skim(donors)
+
+## Categorical features
+# Get the summary statistics for the categorical data.
+donors %>%  keep(is.factor) %>%  summary()
+
+# Get summary statistics for the incomeRating feature. 
+summary(select(donors, incomeRating))
+
+# Get fractional frequency distribution for each of the values (including NA -- for which we say exclude = NULL in the table()).
+donors %>%
+  select(incomeRating) %>%
+  table(exclude = NULL) %>%
+  prop.table()
+
+# Since these are categorical values, let's set the values for the NAs to 'UNK'.
+#have to convert factor to character, then replace NA with UNK, then convert back to factor
+#before converting NAs to UNKs
+summary(select(donors, incomeRating))
+
+donors$incomeRating  = as.character(donors$incomeRating)
+donors$incomeRating <- donors$incomeRating %>% replace_na('UNK') 
+donors$incomeRating = as.factor(donors$incomeRating)
+
+#after converting NAs to UNKs
+summary(select(donors, incomeRating))
+
+
+# Let's deal with the NAs for wealthRating, urbanicity, socioEconomicStatus, isHomeowner and gender 
+
+donors$wealthRating  = as.character(donors$wealthRating)
+donors$wealthRating <- donors$wealthRating %>% replace_na('UNK') 
+donors$wealthRating = as.factor(donors$wealthRating)
+
+donors$urbanicity     = as.character(donors$urbanicity)
+donors$urbanicity <- donors$urbanicity %>% replace_na('UNK') 
+donors$urbanicity = as.factor(donors$urbanicity)
+
+
+donors$socioEconomicStatus     = as.character(donors$socioEconomicStatus)
+donors$socioEconomicStatus <- donors$socioEconomicStatus %>% replace_na('UNK') 
+donors$socioEconomicStatus = as.factor(donors$socioEconomicStatus)
+
+donors$isHomeowner     = as.character(donors$isHomeowner)
+donors$isHomeowner <- donors$isHomeowner %>% replace_na('UNK') 
+donors$isHomeowner = as.factor(donors$isHomeowner)
+
+
+donors$gender     = as.character(donors$gender)
+donors$gender <- donors$gender %>% replace_na('UNK') 
+donors$gender = as.factor(donors$gender)
+
+
+
+donors %>%  keep(is.factor) %>%  summary()
+
+## Continuous features
+# Get the summary statistics for the continuous features.
+donors %>%   keep(is.numeric) %>%   skim()
+
+
+
+# There are a lot of missing values for age. We will use mean imputation (by Gender) to resolve the NAs.
+skim(donors$age)
+donors <- donors %>%
+  group_by(gender) %>%
+  mutate(age = ifelse(is.na(age), mean(age, na.rm = TRUE), age)) %>%
+  ungroup()
+
+
+skim(donors$age)
+# Get summary statistics for the numberChildren feature.
+skim(donors$numberChildren)
+
+# There are a lot of missing values for numberChildren. We will use median imputation to resolve the NAs.
+# Note that we used median this time instead of mean. 
+# Mean wouldn't have given us reasonable values, since we cannot have 1.5 number of children.
+donors <- donors %>%
+  mutate(numberChildren = ifelse(is.na(numberChildren), 
+                                 median(numberChildren, na.rm = TRUE), 
+                                 numberChildren))
+
+skim(donors$numberChildren)
+
+#use the commands below if you want to store the cleaned data on your drive
+#write_csv(donors, "donorsCleaned.csv")
+#donors1 <- read_csv("donorsCleaned.csv", col_types = "nnffnnnnnnnnffffffffff")
+
+
+
+# create Y and X data frames
+#we will need the y column as a vector (X to be a dataframe)
+# dplyr allows us to do this by using 'pull' instead of select
+donors_y <- donors %>% pull(respondedMailing) %>% as.factor()
+
+# exclude column 1 since its a ID 
+donors_x = donors %>% select(-c("respondedMailing"))
+
+```
+
+
+## 1.2 Create Training and Testing data sets
+
+```{r }
+# 75% of the data is used for training and rest for testing
+smp_size <- floor(0.75 * nrow(donors_x))
+
+# randomly select row numbers for training data set
+set.seed(12345)
+train_ind <- sample(seq_len(nrow(donors_x)), size = smp_size)
+
+# creating test and training sets for x
+donors_x_train <- donors_x[train_ind, ]
+donors_x_test <- donors_x[-train_ind, ]
+
+# creating test and training sets for y
+donors_y_train <- donors_y[train_ind]
+donors_y_test <- donors_y[-train_ind]
+
+
+
+```
+
+## 1.3 Fit a logistic regression
+
+Create Training and Testing data sets
+
+```{r message=FALSE, warnings=FALSE}
+
+
+#Change the levels of the outcome variable
+#TRUE, FALSE levels give problems, convert to YES, NO
+
+donors_y_train_l <- as.factor(ifelse(donors_y_train =="TRUE", "YES", "NO"))
+donors_y_test_l <- as.factor(ifelse(donors_y_test =="TRUE", "YES", "NO"))
+
+
+
+glm_fit <- train(donors_x_train,
+                 donors_y_train_l, 
+                 method = "glm",
+                 family = "binomial",
+                 preProc = c("center", "scale"))
+```
+
+```{r }
+# Predict on test data
+glm_predict <- predict(glm_fit, newdata = donors_x_test)
+
+#new state DC pops up in test set, we have to delete it 
+#in the X frame and the Y vector of the test data
+#get index of rows where state == DC
+rowNumDC <- which(donors_x_test$state == "DC", arr.ind=TRUE)
+
+donors_x_test_sansDC <- donors_x_test %>% filter(state != "DC")
+donors_y_test_l_sansDc <- donors_y_test_l[-c(rowNumDC)]
+
+glm_predict <- predict(glm_fit, newdata = donors_x_test_sansDC)
+glm_predict_prob <- predict(glm_fit, newdata = donors_x_test_sansDC, type="prob")
+
+```
+
+Convert probability outcome into categorical outcome 
+```{r }
+y_pred_num <- ifelse(glm_predict_prob[,2] > 0.5, "YES", "NO")
+```
+
+```{r }
+# Print Confusion matrix, Accuarcy, Sensitivity etc 
+
+confusionMatrix(as.factor(y_pred_num), as.factor(donors_y_test_l_sansDc), positive = "YES", mode="prec_recall")
+
+#Recording Output
+
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    NO   YES
+#        NO  22621  1230
+#        YES     1     0
+#                                           
+#                Accuracy : 0.9484          
+#                  95% CI : (0.9455, 0.9512)
+#     No Information Rate : 0.9484          
+#     P-Value [Acc > NIR] : 0.5193          
+#                                           
+#                   Kappa : -1e-04          
+#                                           
+#  Mcnemar's Test P-Value : <2e-16          
+#                                           
+#             Sensitivity : 0.000e+00       
+#             Specificity : 1.000e+00       
+#          Pos Pred Value : 0.000e+00       
+#          Neg Pred Value : 9.484e-01       
+#              Prevalence : 5.157e-02       
+#          Detection Rate : 0.000e+00       
+#    Detection Prevalence : 4.193e-05       
+#       Balanced Accuracy : 5.000e-01       
+#                                           
+#        'Positive' Class : YES  
+```
+
+
+## 1.4 Do SMOTE to deal with class imbalance
+
+```{r }
+
+----------------------------------------------------------------
+
+# What is the class distribution?
+
+# Check the proportions for the class between all 3 datasets.
+round(prop.table(table(select(donors, respondedMailing), exclude = NULL)), 4) * 100
+round(prop.table(table(donors_y_train)), 4) * 100
+round(prop.table(table(donors_y_test)), 4) * 100
+
+# We will use the SMOTE() function from the DMwR package to balance the training data before we #build our model.
+install.packages("abind")
+library("abind")
+
+install.packages( "https://cran.r-project.org/src/contrib/Archive/DMwR/DMwR_0.4.1.tar.gz", repos=NULL, type="source" )
+library("DMwR")
+set.seed(1234)
+
+#create the full training dataset with X and y variable
+donors_train <-  cbind(donors_x_train, donors_y_train)
+
+#parameters for SMOTE are 1) prediction model, 2) data, 3) percent to oversample, 4) percent to undersample)
+#he parameter perc.under controls the proportion of cases of the majority class that will be #randomly selected for the final "balanced" data set. 
+
+#say N-minority class = 50
+#That’s why with perc.over = 100 and perc.under = 200, starting from Nmin=50
+#Synthetic = (100/100)×50=50
+#Final minority = 50+50=100
+#Final majority = (200/100)×50=100
+#Result = 100 vs 100 ⇒ 50–50 balance
+
+donors_train_balanced <- SMOTE(donors_y_train ~ ., data.frame(donors_train), perc.over = 100, perc.under = 200)
+
+# Check the proportions for the class between all 3 datasets.
+round(prop.table(table(select(donors, respondedMailing), exclude = NULL)), 4) * 100
+round(prop.table(table(donors_train_balanced$donors_y_train)), 4) * 100
+round(prop.table(table(donors_y_test)), 4) * 100
+
+
+#remove the Y column from the newly balanced training set
+donors_x_train <- donors_train_balanced %>% select(-donors_y_train)
+
+#store the Y column
+donors_y_train_l <- donors_train_balanced %>% pull(donors_y_train) %>% as.factor()
+
+#convert level of factor Y variable to YES, NO as TRUE, FALSE gives problem with some models
+
+donors_y_train_l <- as.factor(ifelse(donors_y_train_l =="TRUE", "YES", "NO"))
+donors_y_test_l <- as.factor(ifelse(donors_y_test =="TRUE", "YES", "NO"))
+
+```
+
+## 1.5 Fit logistic again
+```{r  message=FALSE,  warning=FALSE}
+
+glm_fit <- train(donors_x_train,
+                 donors_y_train_l, 
+                 method = "glm",
+                 family = "binomial",
+                 preProc = c("center", "scale")
+                 )
+```
+
+```{r }
+# Predict on test data
+glm_predict <- predict(glm_fit, newdata = donors_x_test)
+
+#new states VI, DC, DE, RI, NH pop up in test set, we have to delete it
+
+
+rowNumsToExcludeFromY <- which((donors_x_test$state == "DC" |  donors_x_test$state == "DE" | donors_x_test$state == "VI" | donors_x_test$state == "NH" | 
+  donors_x_test$state == "RI" ), arr.ind = TRUE)
+
+donors_x_test_sansMulti <- donors_x_test %>% filter(state != "DC" &  donors_x_test$state != "DE" & donors_x_test$state != "VI" & donors_x_test$state != "NH" & 
+  donors_x_test$state != "RI" )
+donors_y_test_l_sansMulti <- donors_y_test_l[-c(rowNumsToExcludeFromY)]
+
+
+
+
+#glm_predict <- predict(glm_fit, newdata = donors_x_test_sansMulti)
+glm_predict_prob <- predict(glm_fit, newdata = donors_x_test_sansMulti, type="prob")
+
+
+```
+
+convert probability outcome into categorical outcome 
+```{r }
+y_pred_num <- ifelse(glm_predict_prob[,2] > 0.5, "YES", "NO")
+```
+
+```{r }
+# Print Confusion matrix, Accuarcy, Sensitivity etc 
+
+confusionMatrix(as.factor(y_pred_num), as.factor(donors_y_test_l_sansMulti), positive = "YES",
+                mode = "prec_recall")
+
+
+
+##storing output
+# Confusion Matrix and Statistics
+# 
+#           Reference
+# Prediction    NO   YES
+#        NO  18431   890
+#        YES  4178   340
+#                                           
+#                Accuracy : 0.7874          
+#                  95% CI : (0.7822, 0.7926)
+#     No Information Rate : 0.9484          
+#     P-Value [Acc > NIR] : 1               
+#                                           
+#                   Kappa : 0.0405          
+#                                           
+#  Mcnemar's Test P-Value : <2e-16          
+#                                           
+#             Sensitivity : 0.27642         
+#             Specificity : 0.81521         
+#          Pos Pred Value : 0.07525         
+#          Neg Pred Value : 0.95394         
+#              Prevalence : 0.05160         
+#          Detection Rate : 0.01426         
+#    Detection Prevalence : 0.18952         
+#       Balanced Accuracy : 0.54581         
+#                                           
+#        'Positive' Class : YES 
+
+```
+
+
+
+
+
+
+
+
+## 1.6 KNN Classification
+
+Since we have to find whihc k to use we need to do hyper parameter tuning using cross-validation. 
+
+**Cross validation**
+
+It is a technique to use same training data but some portion of it for training and rest for validation of model. This technique reduces chances of overfitting
+
+**Hyperparamter tuning**
+
+We provide a list of hyperparameters to train the model. This helps in identifying best set of hyperparameters for a given model like Decision tree. **train** function in caret library automatically stores the information of the best model and its hyperparameters.
+
+There is anotehr challenge here. How do we calculate distance between two donors based on categorical data like state?
+**Dealing with  categorical variables for k-nearest neighbors**
+
+We will do this by creating dummy variables for each of the levels of each of the categorical variables. For example the gender variables has 4 levels "female" "joint"  "male"   "UNK" . This will imply that we will have 4 dummy variables corresponding to these 4 levels
+ 
+```{r } 
+library( dummies)
+
+donors_x <- data.frame(donors_x) #convert from a tibble to a data frame
+donors_x <- dummy.data.frame(data=donors_x, sep="_")  #does one-hot encoding
+
+skim(donors_x)
+
+```
+
+## 1.7 Normalize the data
+
+Create a function that normalizes columns since scale for each column might be different.
+
+```{r }
+# function to normalize data (0 to 1)
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+```
+
+```{r }
+# Normalize x variables since they are at different scale
+donors_x_normalized <- as.data.frame(lapply(donors_x, normalize))
+```
+
+## 1.8 fit KNN Model
+Note, it takes a very long time do proper hyper-parameter tuning here.  Leave it overnight.
+```{r }
+
+# Cross validation 
+cross_validation <- trainControl(## 10-fold CV
+                                method = "repeatedcv",
+                                number = 10,
+                                ## repeated three times
+                                repeats = 1,
+                                summaryFunction=twoClassSummary, 
+                                classProbs=TRUE)
+# Hyperparamter tuning
+# k = number of nrearest neighbours
+Param_Grid <-  expand.grid( k = 1:9)
+
+# fit the model to training data
+knn_clf_fit <- train(donors_x_train,
+                     donors_y_train_l,
+                     method = "knn",
+                     metric = "ROC",
+                     tuneGrid = Param_Grid,
+                     trControl = cross_validation )
+
+
+# check the accuracy for different models
+knn_clf_fit
+
+## i am saving the output below as it takes along time to estimate 
+# k-Nearest Neighbors 
+# 
+# 71559 samples
+#   110 predictor
+#     2 classes: 'FALSE', 'TRUE' 
+# 
+# No pre-processing
+# Resampling: Cross-Validated (10 fold, repeated 3 times) 
+# Summary of sample sizes: 64404, 64404, 64402, 64404, 64402, 64403, ... 
+# Resampling results across tuning parameters:
+# 
+#   k   Accuracy   Kappa        
+#    1  0.9044239   7.070528e-03
+#    2  0.9053509   7.190023e-04
+#    3  0.9429468   3.593737e-03
+#    4  0.9427931   1.743292e-03
+#    5  0.9482525  -5.148070e-04
+#    6  0.9483689   3.610822e-04
+#    7  0.9493239  -2.063296e-04
+#    8  0.9493425  -1.681604e-04
+#    9  0.9494683  -8.354804e-05
+#   10  0.9494590  -1.022275e-04
+# 
+# Accuracy was used to select the optimal model using the largest value.
+# The final value used for the model was k = 9.
+
+```
+
+```{r }
+# Plot accuracies for different k values
+plot(knn_clf_fit)
+
+# print the best model
+print(knn_clf_fit$finalModel)
+```
+
+```{r }
+# Predict on test data
+knnPredict <- predict(knn_clf_fit, newdata = donors_x_test) 
+
+```
+
+```{r }
+# Print Confusion matrix, Accuarcy, Sensitivity etc 
+confusionMatrix(knnPredict, donors_y_test, positive="TRUE", mode = "prec_recall")
+
+
+```
+
