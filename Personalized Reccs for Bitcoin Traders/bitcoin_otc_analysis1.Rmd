@@ -1,0 +1,102 @@
+---
+title: "Personalized Trading Partner Recos on Bitcoin OTC"
+author: "Prof R. Bapna (adapted from Prof Xuan Bi@UMN)"
+date: "12/2/2020"
+output: html_document
+---
+
+In this project we will try to unpack who-trusts-whom on the Bitcoin OTC network. Users are anonymous on this platform and this creates financial risk for traders. The goal is see if we can unpack some latent structure and information in trustworthiness ratings given by traders to each other (much in the same way netflix recommends movies, or OkCupid recommends dates based on voting or liking actions), to give personalized ratings to individual traders. In Bitocin OTC members rate other members on a scale of -10 (total distrust) to +10 (total trust). This will be the key data for this project. 
+
+Note, many statistical models, such as logistic regression, tell you about the importance and role of various features for the average user's response. In other words they are not individual level models, but rather, are at the aggregate level.  In personalization, like at Amazon, different users, get different recommendations when they browse the same product. How can we achieve this?
+
+
+*The GOAL is to match senders and receivers in a personalized manner on Bitcoin OTC.*
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir ="C:\\Users\\rbapna\\Dropbox\\digiTransformationExecEd\\AMPF - analytics class")
+```
+
+
+```{r include=FALSE }
+#Please install the R package "recosystem"
+library(recosystem)
+```
+
+
+
+# 2. Load the data
+Note that all we have here are sender and receiver ids and ratings [-10, 10]. The timestamps of the rating is not important. This is similar to what Netflix has for instance, where senders are equivalent to users and receivers are similar to movies. 
+```{r  }
+otc=read.csv("bitcoin_otc.csv",sep=',',header=F)
+colnames(otc)=c("sender","receiver","rating","time")
+dim(otc) #35592 ratings
+n=35592
+max(otc[,1]) #6000 senders
+max(otc[,2]) #6005 receivers
+```
+
+# 3. Split the data for training and testing
+```{r  include=FALSE}
+set.seed(666)
+n_train=floor(n*0.8)
+trainID=sample(1:n,n_train)
+testID=setdiff(1:n,trainID)
+train_set=otc[trainID,]
+test_set=otc[testID,]
+```
+
+
+
+#4. Running matrix factorization
+```{r  }
+r = Reco()
+#Tuning
+opts = r$tune(data_memory(train_set[,1],train_set[,2],train_set[,3],index1=TRUE), 
+              opts = list(loss="l2",dim = c(1, 2, 3), lrate = 0.1,nthread = 1, niter = 10))
+opts
+#Training: using the tuned parameters
+set.seed(123)
+RS3=r$train(data_memory(train_set[,1],train_set[,2],train_set[,3],index1=TRUE), opts = c(loss="l2",opts$min, nthread = 1, niter = 20))
+#Predicting
+pred_rvec = r$predict(data_memory(test_set[,1],test_set[,2],test_set[,3],index1=TRUE), out_memory())
+#Evaluating the performance of the prediction with RMSE
+sqrt(mean((test_set[,3]-pred_rvec)^2)) #2.84; a very small RMSE, given the rating range is -10 to 10
+
+```
+
+
+#5. Manually check a few predictions
+```{r  }
+#Calculate P and Q (latent-factor matrices)
+P_file = out_file(tempfile())
+Q_file = out_file(tempfile())
+r$output(P_file, Q_file)
+P0=read.table(P_file@dest, header = FALSE, sep = " ")
+Q0=read.table(Q_file@dest, header = FALSE, sep = " ")
+P=matrix(as.numeric(unlist(P0)),dim(P0))
+Q=matrix(as.numeric(unlist(Q0)),dim(Q0))
+#Manually check predictions with P and Q
+test_set[1:11,]
+
+#what are sender 1's weights of the 3 latent factors?
+P[1,]
+
+#what are receiver 15's weights of the 3 latent factors?
+Q[15,]
+
+# we can multiply and sum these to get the predicted rating of 1 to 15
+sum(P[1,]*Q[15,]) #Compare this value with the actual rating: 1
+
+#what are sender 1's weights of the 3 latent factors?
+P[2,]
+
+#what are receiver 15's weights of the 3 latent factors?
+Q[20,]
+#lets try 2 to 20
+sum(P[2,]*Q[20,]) #Compare this value with the actual rating: 5
+
+
+```
+
+Conclusion: We were able to estimate two connected 3 dimensional latent spaces that have weights such that their multiplications give the ratings generated in training set. Think of these as three factors that influence trust in the real world, but we don't know what these factor are. By the end of this algorithm we estimate each sender and each receivers weights for these 3 factors! This will allow us to now take any two people and multiply and add their weights to estimate the level of trust between them. If its high, say above 5, then we can suggest them to trade with each other!
