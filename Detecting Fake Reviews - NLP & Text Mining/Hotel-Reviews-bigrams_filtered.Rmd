@@ -1,0 +1,600 @@
+---
+title: "Hotel reviews (truthful vs deceptive)"
+subtitle: "Predictions using Text"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    toc: yes
+    toc_depth: '3'
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 3
+---
+
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir ="C:/Users/rbapna/Downloads")
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+## Load the required libraries
+library(tm) #For text mining functionality
+library(SnowballC) #For collapsing words to common roots
+library(wordcloud) #For creating word cloud visualization
+library(RColorBrewer) #For creating colorful graphs using pre-defined palettes
+library(caret) # used for various predictive models
+library(rpart) #For building Decision Tree Model
+library(caTools) #For splitting the data  
+library(dplyr) #used for data transformation
+library(rpart.plot) # used to plot decision tree
+library(ranger) # used to random forest
+library(randomForest) # used to random forest
+library(quanteda) #to get ngrams without using RWeka
+#library(RWeka) #used to create bi-grams and tri-grams
+
+```
+
+# 1. Data Preparation
+
+## 1.1 Loading data and basic checks
+
+The dataset contains 400 Truthful positive , 400 Truthful negative , 400 Deceptive positive and 400 Deceptive negative reviews of the customers from 20 most popular hotels in Chicago.
+
+Source of dataset is this paper - 
+M. Ott, Y. Choi, C. Cardie, and J.T. Hancock. 2011. Finding Deceptive Opinion Spam by Any Stretch of the Imagination. In Proceedings of the 49th Annual Meeting of the Association for Computational Linguistics: Human Language Technologies, available at https://myleott.com/op_spamACL2011.pdf
+
+"To solicit **gold-standard** deceptive opinion spam
+using AMT, we create a pool of 400 Human-
+Intelligence Tasks (HITs) and allocate them evenly
+across our 20 chosen hotels. To ensure that opinions
+are written by unique authors, we allow only a
+single submission per Turker. We also restrict our
+task to Turkers who are located in the United States,
+and who maintain an approval rating of at least 90%.
+Turkers are allowed a maximum of 30 minutes to
+work on the HIT, and are paid one US dollar for an
+accepted submission.
+
+Each HIT presents the Turker with the name and
+website of a hotel. The HIT instructions ask the
+Turker to assume that they work for the hotel’s marketing
+department, and to pretend that their boss
+wants them to write a fake review (as if they were
+a customer) to be posted on a travel review website;
+additionally, the review needs to sound realistic and
+portray the hotel in a positive light."
+
+**Target Variable** - 'deceptive' column is the dependent variable and our task is to Predict if a review is truthful or deceptive.
+
+```{r, warning=FALSE, message=FALSE}
+#read the input file
+data <- read.csv("deceptive-opinion.csv",head=TRUE)
+
+#number of rows
+nrow(data)
+
+# column names
+colnames(data)
+```
+
+There are 5 columns in the dataset. 
+
+'deceptive' is target column. 
+
+'hotel' column contains the name of the hotel. 
+
+'polarity' column tells us if the review was positive or negative. 
+
+'source' column has the information about the source of the review.
+
+'text' column contains the actual reviews
+
+
+Let's look at the summary of the length of reviews
+
+```{r, warning=FALSE, message=FALSE}
+summary(nchar(as.character(data$text)))
+
+```
+
+The minimum character count in a review is 151 and the maximum is 4,159. The average character count of all the reviews is about 806. Since, the minimum character count is 151, we also know from this that there is no empty review.
+
+
+## 1.2 Data trasformation for Text Analysis
+
+'tm' package is widely used for text mining in R. This package uses simple but very effective methodology and used in NLP. It counts the frequency of each word in the text and uses these counts as independent variables.
+
+Next, we need to create a Corpus which is just a collection of text documents.
+
+### 1.2.1 Corpus creation
+
+```{r, warning=FALSE, message=FALSE}
+# Create corpus
+corpus = Corpus(VectorSource(data$text)) 
+corpus
+
+
+#inspect a particular document
+writeLines(as.character(corpus[[30]]))
+
+
+#The tm package offers a number of transformations that ease the tedium of cleaning data. 
+#To see the available transformations  type getTransformations() at the R prompt:
+
+# Convert to lower-case
+corpus = tm_map(corpus, tolower) 
+
+# Remove punctuation
+corpus = tm_map(corpus, removePunctuation) 
+
+# Look at stop words to understand which words we are removing for the analysis
+stopwords("english")[1:10] 
+
+# Remove stopwords and the word 'hotel'
+corpus = tm_map(corpus, removeWords, c("hotel", stopwords("english")))
+
+# Getting roots of the words in the document
+corpus = tm_map(corpus, stemDocument)
+
+#see https://eight2late.wordpress.com/2015/05/27/a-gentle-introduction-to-text-mining-using-r/ for more on cleaning text data to use in prediction
+```
+
+
+### 1.2.2 Corpus Visualization
+
+Here, we will use wordcloud package to display the words based on their frequency in form of a cloud.
+Note that this will only include unigrams as it's based on the original corpus.  
+```{r, warning=FALSE, message=FALSE}
+wordcloud(corpus, max.words=100,
+                  random.order=FALSE, 
+                  rot.per=0.10, 
+                  colors=brewer.pal(8,"Dark2"))
+```
+
+From the wordcloud we can see that the words 'room', 'stay', 'chicago', 'service' have a very high frequency.
+
+\newpage
+
+### 1.2.3   Term Document Matrix Creation and Bigrams
+
+Here we are using the quanteda package to extract bigrams.
+
+```{r, warning=FALSE, message=FALSE}
+
+
+#In the TDM, the documents are represented by rows and the terms (or words) by columns.
+#If a word occurs in a particular document, then the matrix entry for corresponding to that row and column is 1, else it is 0
+#Multiple occurrences within a document are recorded – that is, 
+#If a word occurs twice in a document, it is recorded as “2” in the relevant matrix entry
+#TF-IDF is a more sophisticated appraoch that normalizes the frequency of a word in a given document by its frequency across all documents
+
+# Let's convert TM unigram corpus into a TDM with TF-IDF weighting
+frequency_df_unigrams <- TermDocumentMatrix(corpus,control=list(weighting = weightTfIdf,normalize=TRUE))
+#we get a big matrix with 7372 terms as rows and 1600 review documents as columns
+#lets see a small slice of this
+##error#inspect(frequency_df_unigrams[11:12,1000:1005])
+
+# quanteda corpus now, to get bigrams
+corpus2 = corpus(corpus)
+bigrams <- tokens(corpus2) %>%
+    tokens_ngrams(n = 2) %>%
+    dfm()
+
+frequency_df_bigrams <- as.TermDocumentMatrix(convert(bigrams, to = "tm"))
+frequency_df_bigrams <- weightTfIdf(frequency_df_bigrams,normalize=TRUE)
+
+# Create a review - word count matrix - use TF-IDF instead of frequency
+# we are calculating TF-IDF for each word in a review
+
+# Inspect first 10 words of 5 Reviews
+inspect(frequency_df_unigrams[1:10,1:5]) 
+# Inspect first 10 bigrams of 5 Reviews
+inspect(frequency_df_bigrams[1:10,1:5])
+
+# Remove sparse terms. We are allowing a maximum sparsity of 0.95 
+#this means we wil reove a column that has 95% or more of its rows at 0
+# Note: the only bigrams we now retain with a cutoff of 0.9 are room-service and front-desk.
+# This cutoff needs to be higher than when working purely with unigrams, because bigrams are inherently sparser
+frequency_df_unigrams = removeSparseTerms(frequency_df_unigrams, 0.95) 
+frequency_df_bigrams = removeSparseTerms(frequency_df_bigrams, 0.90)
+
+# Convert to a data frame
+frequency_df_unigrams = as.data.frame(as.matrix(frequency_df_unigrams))
+frequency_df_bigrams = as.data.frame(as.matrix(frequency_df_bigrams))
+
+# give the two tdm's the same doc names so we can append them together.
+colnames(frequency_df_bigrams) <- colnames(frequency_df_unigrams)
+
+# combine the two matrices.
+frequency_df <- rbind(frequency_df_unigrams,frequency_df_bigrams)
+
+# transpose data frame to get words as columns and reviews as rows
+frequency_mat <- t(as.matrix(frequency_df))
+mode(frequency_mat)="numeric"
+frequency_df <- data.frame(frequency_mat)
+
+# Make all variable names R-friendly
+colnames(frequency_df) = make.names(colnames(frequency_df))
+
+# Add dependent variable
+frequency_df$outcome = data$deceptive
+```
+
+# 2. Predictive Models
+
+Now, let's use the corpus that we created to design different predictive models. We will be creating 2 models which are KNN classification and Decision Tree. 
+
+But before that, we need to split the data into train and test group so that we can measure and compare the performance of the models.
+
+**Splitting the data**
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(1000)
+# 75% of the data is used for training and rest for testing
+smp_size <- floor(0.75 * nrow(frequency_df))
+
+# randomly select row numbers for training data set
+train_ind <- sample(seq_len(nrow(frequency_df)), size = smp_size)
+
+# create Y (dependent) and X (independent) data frames
+frequency_y = frequency_df %>% select("outcome")
+
+frequency_x = frequency_df %>% select(-c("outcome"))
+
+# creating test and training sets for x
+frequency_x_train <- frequency_x[train_ind, ]
+frequency_x_test <- frequency_x[-train_ind, ]
+
+# creating test and training sets for y
+frequency_y_train <- frequency_y[train_ind, ]
+frequency_y_test <- frequency_y[-train_ind, ]
+```
+
+
+## 2.1 KNN Classification
+
+```{r }
+
+# Hyperparameter tuning
+# k = number of nearest neighbors
+Param_Grid <-  expand.grid( k = c(5:20))
+
+# fit the model to training data
+knn_clf_fit <- train(frequency_x_train,
+                     frequency_y_train, 
+                     method = "knn",
+                     tuneGrid = Param_Grid)
+
+# check the accuracy for different models
+knn_clf_fit
+```
+
+```{r }
+# Plot accuracies for different k values
+plot(knn_clf_fit)
+
+# print the best model
+print(knn_clf_fit$finalModel)
+```
+
+```{r }
+# Predict on test data
+knnPredict <- predict(knn_clf_fit, newdata = frequency_x_test) 
+
+```
+
+```{r }
+# Print Confusion matrix, Accuarcy, Sensitivity etc 
+confusionMatrix(knnPredict, as.factor(frequency_y_test))
+
+x1 <- confusionMatrix(knnPredict, as.factor(frequency_y_test))[["overall"]]
+y1 <- confusionMatrix(knnPredict, as.factor(frequency_y_test))[["byClass"]]
+
+# Print Accuracy and F1 score
+
+cat("Accuarcy is ", round(x1[["Accuracy"]],3), "and F1 is ", round (y1[["F1"]],3)  )
+
+```
+
+## 2.2 Decision Tree
+
+
+```{r }
+
+# Hyperparamter tuning
+# maxdepth =  the maximum depth of the tree that will be created or
+# the length of the longest path from the tree root to a leaf.
+
+Param_Grid <-  expand.grid(maxdepth = 2:15)
+
+dtree_fit <- train(frequency_x_train,
+                   frequency_y_train, 
+                   method = "rpart2",
+                   parms = list(split = "gini"),
+                  tuneGrid = Param_Grid)
+
+# check the accuracy for different models
+dtree_fit
+
+# print the final model
+dtree_fit$finalModel
+```
+
+```{r }
+# Plot decision tree
+prp(dtree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+```
+
+
+```{r }
+# Predict on test data
+dtree_predict <- predict(dtree_fit, newdata = frequency_x_test)
+```
+
+
+```{r }
+# Print Confusion matrix, Accuarcy, Sensitivity etc 
+confusionMatrix(dtree_predict,  as.factor(frequency_y_test))
+
+# Add results into clf_results dataframe
+x2 <- confusionMatrix(dtree_predict,  as.factor(frequency_y_test))[["overall"]]
+y2 <- confusionMatrix(dtree_predict,  as.factor(frequency_y_test))[["byClass"]]
+
+# Print Accuracy and F1 score
+
+cat("Accuarcy is ", round(x2[["Accuracy"]],3), "and F1 is ", round (y2[["F1"]],3)  )
+
+```
+
+## 2.3 Random Forest
+
+
+```{r}
+set.seed(100)
+
+#By default, the train function without any arguments re-runs the model over 25 bootstrap samples and across 3 options of the tuning parameter (the tuning #parameter for ranger is mtry; the number of randomly selected predictors at each cut in the tree).
+
+rf_ranger_fit <- train(frequency_x_train,
+                   frequency_y_train, 
+                   method = "ranger",
+                   importance = "permutation", #this is to get feature importance later
+                  )
+
+#Permutation Importance is assessed for each feature by removing the association between that feature and the target. #This is achieved by randomly #permuting the values of the feature and measuring the resulting increase in error. The influence of the correlated features #is also removed.
+
+# print the  model
+rf_ranger_fit
+```
+
+**Feature importance**
+
+```{r}
+# Order the variables based on their importance
+temp1 <- varImp(rf_ranger_fit)$importance
+top20 <- temp1 %>% arrange((Overall)) %>% top_n(20)
+
+
+
+#plot
+ggplot(top20 %>%
+       mutate(phrase=factor(rownames(top20), levels=rownames(top20)) ), 
+       aes(x = phrase, y = Overall)) +
+       geom_bar(stat = "identity" , width=0.3, fill="steelblue") + coord_flip() +
+       ggtitle("Feature Importance") +
+       theme(plot.title = element_text(color="black", size=10, hjust = 0.5))
+```
+
+Prediction on test data 
+
+```{r}
+# Predict outcome on test data
+rf_pred <- predict(rf_ranger_fit,frequency_x_test)
+
+# Print Confusion matrix, Accuarcy, Sensitivity etc 
+confusionMatrix(rf_pred,  as.factor(frequency_y_test))
+
+# Add results into clf_results dataframe
+x3 <- confusionMatrix(rf_pred,  as.factor(frequency_y_test))[["overall"]]
+y3 <- confusionMatrix(rf_pred,  as.factor(frequency_y_test))[["byClass"]]
+
+# Print Accuracy and F1 score
+
+cat("Accuarcy is ", round(x3[["Accuracy"]],3), "and F1 is ", round (y3[["F1"]],3)  )
+
+
+#model take a long time hence I am recording the result
+# Confusion Matrix and Statistics
+# 
+#            Reference
+# Prediction  deceptive truthful
+#   deceptive       176       43
+#   truthful         22      159
+#                                           
+#                Accuracy : 0.8375          
+#                  95% CI : (0.7976, 0.8723)
+#     No Information Rate : 0.505           
+#     P-Value [Acc > NIR] : < 2e-16         
+#                                           
+#                   Kappa : 0.6753          
+#                                           
+#  Mcnemar's Test P-Value : 0.01311         
+#                                           
+#             Sensitivity : 0.8889          
+#             Specificity : 0.7871          
+#          Pos Pred Value : 0.8037          
+#          Neg Pred Value : 0.8785          
+#              Prevalence : 0.4950          
+#          Detection Rate : 0.4400          
+#    Detection Prevalence : 0.5475          
+#       Balanced Accuracy : 0.8380          
+#                                           
+#        'Positive' Class : deceptive  
+```
+
+Of all the 3 Models, Random Forest gave a better accuracy.
+
+# 3. Applying filter-based feature selection
+
+## 3.1. Preprocessing
+
+```{r}
+# Compute the variance of each feature
+feature_variances <- apply(frequency_x_train, 2, var)
+
+# Set the threshold for variance
+variance_threshold <- quantile(feature_variances, 0.5)  # Remove features with low variance / Adjust as needed
+
+# Identify features with variance below the threshold
+low_variance_features <- which(feature_variances < variance_threshold)
+
+# Remove low variance features from both training and testing sets
+filtered_frequency_x_train <- frequency_x_train[, -low_variance_features]
+filtered_frequency_x_test <- frequency_x_test[, -low_variance_features]
+```
+
+## 3.2 KNN Classification (re-do)
+
+```{r }
+# Hyperparameter tuning
+# k = number of nearest neighbors
+Param_Grid <-  expand.grid( k = c(5:20))
+
+# fit the model to training data
+knn_clf_fit_filtered <- train(filtered_frequency_x_train,
+                     frequency_y_train, 
+                     method = "knn",
+                     tuneGrid = Param_Grid)
+
+# check the accuracy for different models
+knn_clf_fit_filtered
+
+# Predict on test data
+knnPredict_filtered <- predict(knn_clf_fit_filtered, filtered_frequency_x_test) 
+```
+
+
+## 3.3 Decision Tree Fitting (re-do)
+
+```{r }
+# Hyperparamter tuning
+# maxdepth =  the maximum depth of the tree that will be created or
+# the length of the longest path from the tree root to a leaf.
+
+Param_Grid <-  expand.grid(maxdepth = 2:15)
+
+dtree_fit_filtered <- train(filtered_frequency_x_train,
+                   frequency_y_train, 
+                   method = "rpart2",
+                   parms = list(split = "gini"),
+                  tuneGrid = Param_Grid)
+
+# Predict on test data
+dtree_predict_filtered <- predict(dtree_fit_filtered, newdata = filtered_frequency_x_test)
+```
+
+## 3.4 Random Forest (re-do)
+
+```{r}
+set.seed(100)
+
+#By default, the train function without any arguments re-runs the model over 25 bootstrap samples and across 3 options of the tuning parameter (the tuning #parameter for ranger is mtry; the number of randomly selected predictors at each cut in the tree).
+
+rf_ranger_fit_filtered <- train(filtered_frequency_x_train,
+                   frequency_y_train, 
+                   method = "ranger",
+                   importance = "permutation", #this is to get feature importance later
+                  )
+
+#Permutation Importance is assessed for each feature by removing the association between that feature and the target. #This is achieved by randomly #permuting the values of the feature and measuring the resulting increase in error. The influence of the correlated features #is also removed.
+
+# Predict outcome on test data
+rf_pred_filtered <- predict(rf_ranger_fit_filtered,filtered_frequency_x_test)
+```
+
+## 3.5 Model Evaluation
+
+```{r }
+# Model Evaluation - kNN
+x4 <- confusionMatrix(knnPredict_filtered, as.factor(frequency_y_test))[["overall"]]
+y4 <- confusionMatrix(knnPredict_filtered, as.factor(frequency_y_test))[["byClass"]]
+
+# Model Evaluation - Decision Tree
+x5 <- confusionMatrix(dtree_predict_filtered,  as.factor(frequency_y_test))[["overall"]]
+y5 <- confusionMatrix(dtree_predict_filtered,  as.factor(frequency_y_test))[["byClass"]]
+
+# Model Evaluation - Random Forest
+x6 <- confusionMatrix(rf_pred_filtered,  as.factor(frequency_y_test))[["overall"]]
+y6 <- confusionMatrix(rf_pred_filtered,  as.factor(frequency_y_test))[["byClass"]]
+```
+
+```{r }
+# Construct summary data
+
+# Define the values
+x1_accuracy <- round(x1[["Accuracy"]], 3)
+x1_f1 <- round(y1[["F1"]], 3)
+x2_accuracy <- round(x2[["Accuracy"]], 3)
+x2_f1 <- round(y2[["F1"]], 3)
+x3_accuracy <- round(x3[["Accuracy"]], 3)
+x3_f1 <- round(y3[["F1"]], 3)
+x4_accuracy <- round(x4[["Accuracy"]], 3)
+x4_f1 <- round(y4[["F1"]], 3)
+x5_accuracy <- round(x5[["Accuracy"]], 3)
+x5_f1 <- round(y5[["F1"]], 3)
+x6_accuracy <- round(x6[["Accuracy"]], 3)
+x6_f1 <- round(y6[["F1"]], 3)
+
+# Combine the values into data frames
+data_x1 <- data.frame(Method = "kNN Raw", Metric = c("Accuracy", "F1"), Value = c(x1_accuracy, x1_f1))
+data_x4 <- data.frame(Method = "kNN Filtered", Metric = c("Accuracy", "F1"), Value = c(x4_accuracy, x4_f1))
+
+data_x2 <- data.frame(Method = "DT Raw", Metric = c("Accuracy", "F1"), Value = c(x2_accuracy, x2_f1))
+data_x5 <- data.frame(Method = "DT Filtered", Metric = c("Accuracy", "F1"), Value = c(x5_accuracy, x5_f1))
+
+data_x3 <- data.frame(Method = "RF Raw", Metric = c("Accuracy", "F1"), Value = c(x3_accuracy, x3_f1))
+data_x6 <- data.frame(Method = "RF Filtered", Metric = c("Accuracy", "F1"), Value = c(x6_accuracy, x6_f1))
+
+# Combine all data for comparison
+comparison_data_kNN <- rbind(data_x1, data_x4)
+comparison_data_DT <- rbind(data_x2, data_x5)
+comparison_data_RF <- rbind(data_x3, data_x6)
+```
+
+```{r}
+# Visualization 
+
+# Plot the comparison using a bar chart
+library(ggplot2)
+
+ggplot(comparison_data_kNN, aes(x = Metric, y = Value, fill = Method)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  labs(title = "Comparison of Accuracy and F1 Score",
+       x = "Metric", y = "Value") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+ggplot(comparison_data_DT, aes(x = Metric, y = Value, fill = Method)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  labs(title = "Comparison of Accuracy and F1 Score",
+       x = "Metric", y = "Value") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+
+ggplot(comparison_data_RF, aes(x = Metric, y = Value, fill = Method)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  labs(title = "Comparison of Accuracy and F1 Score",
+       x = "Metric", y = "Value") +
+  theme_minimal() +
+  theme(legend.title = element_blank())
+```
+
+# 4. Conclusions
+
+In this tutorial, we learned how to use text data to create predictive models.
+The aim was to showcase how text data can be transformed and used in a predictive model. 
+
+
