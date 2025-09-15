@@ -1,0 +1,483 @@
+---
+title: 'Predictive Analytics in-class exercise on Corporate Bankruptcy Detection'
+output:
+  html_document:
+    toc: yes
+    toc_depth: '3'
+    df_print: paged
+  pdf_document:
+    toc: yes
+    toc_depth: 3
+---
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir ="C:\\Users\\rbapna\\Dropbox\\NYUPredModelingCourse\\____Fal2022\\Labs - in class use-cases\\Lab14- Explaianable NN Based Corporate Bankruptcy Prediction")
+
+```
+
+
+```{r message=FALSE,  warning=FALSE}
+# load the required libraries
+library("readxl") # used to read excel files
+library("dplyr") # used for data munging 
+library("FNN") # used for knn regression (knn.reg function)
+library("caret") # used for various predictive models
+library("class") # for using confusion matrix function
+library("rpart.plot") # used to plot decision tree
+library("rpart")  # used for Regression tree
+library("glmnet") # used for Lasso and Ridge regression
+library('NeuralNetTools') # used to plot Neural Networks
+library("PRROC") # top plot ROC curve
+library("ROCR") # top plot lift curve
+library("tidyverse")
+library("skimr")
+library(lime)
+```
+
+
+# 1. Classification
+
+
+## 1.1 Data loading and transformation
+
+
+
+```{r }
+# Load the Corporate Rations Dataset to predict bankruptcy
+
+corpRatios <- read_excel("CL-bankruptcy.xls", 
+     sheet = "data", col_types = c("skip", 
+        "text", "text", "numeric", "numeric", 
+         "numeric", "numeric", "numeric", 
+         "numeric", "numeric", "numeric", 
+          "numeric", "numeric", "numeric", 
+         "numeric", "numeric", "numeric", 
+         "numeric", "numeric", "numeric", 
+         "numeric", "numeric", "numeric", 
+         "numeric", "numeric", "numeric",
+        "numeric"))
+     
+     
+skim(corpRatios)
+
+
+# create Y and X data frames
+corpRatios_y = corpRatios %>% pull("D") %>% as.factor()
+# exclude X1 since its a row number
+corpRatios_x = corpRatios %>% select(-c("D"))
+corpRatios_x$YR <- as.factor(corpRatios_x$YR)
+```
+
+
+Create Training and Testing data sets
+
+```{r }
+# 75% of the data is used for training and rest for testing
+smp_size <- floor(0.75 * nrow(corpRatios_x))
+
+# randomly select row numbers for training data set
+train_ind <- sample(seq_len(nrow(corpRatios_x)), size = smp_size)
+
+# creating test and training sets for x
+corpRatios_x_train <- corpRatios_x[train_ind, ]
+corpRatios_x_test <- corpRatios_x[-train_ind, ]
+
+# creating test and training sets for y
+corpRatios_y_train <- corpRatios_y[train_ind]
+corpRatios_y_test <- corpRatios_y[-train_ind]
+
+# Create an empty data frame to store results from different models
+clf_results <- data.frame(matrix(ncol = 5, nrow = 0))
+names(clf_results) <- c("Model", "Accuracy", "Precision", "Recall", "F1")
+
+# Create an empty data frame to store TP, TN, FP and FN values
+cost_benefit_df <- data.frame(matrix(ncol = 5, nrow = 0))
+names(cost_benefit_df) <- c("Model", "TP", "FN", "FP", "TN")
+
+
+```
+
+**Cross validation**
+
+It is a technique to use same training data but some portion of it for training and rest for validation of model. This technique reduces chances of overfitting
+
+**Hyperparamter tuning**
+
+We provide a list of hyperparameters to train the model. This helps in identifying best set of hyperparameters for a given model like Decision tree. **train** function in caret library automatically stores the information of the best model and its hyperparameters.
+
+
+
+## 1.3 Decision Tree Classification 
+
+```{r }
+
+# Cross validation
+cross_validation <- trainControl(## 10-fold CV
+                                method = "repeatedcv",
+                                number = 10,
+                                ## repeated three times
+                                repeats = 3)
+# Hyperparamter tuning
+# maxdepth =  the maximum depth of the tree that will be created or
+# the length of the longest path from the tree root to a leaf.
+
+Param_Grid <-  expand.grid(maxdepth = 2:10)
+
+dtree_fit <- train(corpRatios_x_train,
+                   corpRatios_y_train, 
+                   method = "rpart2",
+                   # split - criteria to split nodes
+                   parms = list(split = "gini"),
+                  tuneGrid = Param_Grid,
+                   trControl = cross_validation,
+                  # preProc -  perform listed pre-processing to predictor dataframe
+                   preProc = c("center", "scale"))
+
+# check the accuracy for different models
+dtree_fit
+```
+
+```{r }
+# print the final model
+dtree_fit$finalModel
+```
+
+```{r }
+# Plot decision tree
+prp(dtree_fit$finalModel, box.palette = "Reds", tweak = 1.2)
+```
+
+```{r }
+# Predict on test data
+dtree_predict <- predict(dtree_fit, newdata = corpRatios_x_test)
+```
+
+```{r }
+# Print Confusion matrix, Accuarcy, Sensitivity etc 
+confusionMatrix(dtree_predict,  corpRatios_y_test , positive = "1")
+
+# Add results into clf_results dataframe
+x2 <- confusionMatrix(dtree_predict,  corpRatios_y_test , positive = "1")[["overall"]]
+y2 <- confusionMatrix(dtree_predict,  corpRatios_y_test , positive = "1")[["byClass"]]
+
+clf_results[nrow(clf_results) + 1,] <-  list(Model = "Decision Tree", 
+                                             Accuracy = round (x2[["Accuracy"]],3), 
+                                            Precision = round (y2[["Precision"]],3), 
+                                            Recall = round (y2[["Recall"]],3), 
+                                            F1 = round (y2[["F1"]],3))
+
+# Print Accuracy and F1 score
+
+cat("Accuarcy is ", round(x2[["Accuracy"]],3), "and F1 is ", round (y2[["F1"]],3)  )
+
+# Add results into cost_benefit_df dataframe for cost benefit analysis 
+a2 <- confusionMatrix(dtree_predict,  corpRatios_y_test )
+
+cost_benefit_df[nrow(cost_benefit_df) + 1,] <-  list(Model = "Decision Tree", 
+                                             TP = a2[["table"]][4], 
+                                             FN = a2[["table"]][3], 
+                                             FP = a2[["table"]][2], 
+                                             TN = a2[["table"]][1])
+
+```
+
+## 1.4 Logistic regression
+
+
+```{r  message=FALSE,  warning=FALSE}
+glm_fit <- train(corpRatios_x_train,
+                 corpRatios_y_train, 
+                 method = "glm",
+                 family = "binomial",
+                 preProc = c("center", "scale"))
+```
+
+```{r }
+# Predict on test data
+glm_predict <- predict(glm_fit, newdata = corpRatios_x_test)
+glm_predict_prob <- predict(glm_fit, newdata = corpRatios_x_test, type="prob")
+
+# one of the factor levels is not in the tes set
+#let find out which row this is
+#rowMissingFactor <- which(corpRatios_x_test$YR == "80",  arr.ind=TRUE)
+#corpRatios_x_test <- corpRatios_x_test %>% filter(YR != "80")
+
+glm_predict_prob <- predict(glm_fit, newdata = corpRatios_x_test, type="prob")
+```
+
+convert probability outcome into categorical outcome 
+```{r }
+y_pred_num <- ifelse(glm_predict_prob[,2] > 0.5, 1, 0)
+```
+
+```{r }
+# Print Confusion matrix, Accuarcy, Sensitivity etc 
+confusionMatrix(as.factor(y_pred_num), as.factor(corpRatios_y_test), positive = "1")
+
+# Add results into clf_results dataframe
+x3 <- confusionMatrix(as.factor(y_pred_num), as.factor(corpRatios_y_test), positive = "1")[["overall"]]
+y3 <- confusionMatrix(as.factor(y_pred_num), as.factor(corpRatios_y_test),positive = "1")[["byClass"]]
+
+clf_results[nrow(clf_results) + 1,] <-  list(Model = "Logistic Regression", 
+                                             Accuracy = round (x3[["Accuracy"]],3), 
+                                            Precision = round (y3[["Precision"]],3), 
+                                            Recall = round (y3[["Recall"]],3), 
+                                            F1 = round (y3[["F1"]],3))
+
+# Print Accuracy and F1 score
+cat("Accuarcy is ", round(x3[["Accuracy"]],3), "and F1 is ", round (y3[["F1"]],3)  )
+
+# Add results into cost_benefit_df dataframe for cost benefit analysis 
+a3 <- confusionMatrix(as.factor(y_pred_num), as.factor(corpRatios_y_test))
+
+#be careful about accurately pickign up the TP, FN, FP and TN
+cost_benefit_df[nrow(cost_benefit_df) + 1,] <-  list(Model = "Logistic Regression", 
+                                             TP = a3[["table"]][4], 
+                                             FN = a3[["table"]][3], 
+                                             FP = a3[["table"]][2], 
+                                             TN = a3[["table"]][1])
+```
+
+
+
+## 1.5 XGBoost classification
+
+```{r message=FALSE,  warning=FALSE}
+XG_clf_fit <- train(corpRatios_x_train %>% select(-c("YR")), 
+                    corpRatios_y_train,
+                    method = "xgbTree",
+                    preProc = c("center", "scale"))
+```
+
+```{r }
+# print the final model
+XG_clf_fit$finalModel
+```
+
+```{r }
+# Predict on test data
+XG_clf_predict <- predict(XG_clf_fit,corpRatios_x_test)
+```
+
+```{r }
+# Print Confusion matrix, Accuracy, Sensitivity etc 
+confusionMatrix(XG_clf_predict,  corpRatios_y_test, positive = "1" )
+
+# Add results into clf_results dataframe
+x4 <- confusionMatrix(XG_clf_predict,  corpRatios_y_test , positive = "1")[["overall"]]
+y4 <- confusionMatrix(XG_clf_predict,  corpRatios_y_test , positive = "1")[["byClass"]]
+
+clf_results[nrow(clf_results) + 1,] <-  list(Model = "XG Boost", 
+                                             Accuracy = round (x4[["Accuracy"]],3), 
+                                            Precision = round (y4[["Precision"]],3), 
+                                            Recall = round (y4[["Recall"]],3), 
+                                            F1 = round (y4[["F1"]],3))
+
+# Print Accuracy and F1 score
+cat("Accuarcy is ", round(x4[["Accuracy"]],3), "and F1 is ", round (y4[["F1"]],3)  )
+
+# Add results into cost_benefit_df dataframe for cost benefit analysis 
+a4 <- confusionMatrix(XG_clf_predict,  corpRatios_y_test )
+
+cost_benefit_df[nrow(cost_benefit_df) + 1,] <-  list(Model = "XG Boost", 
+                                             TP = a4[["table"]][4], 
+                                             FN = a4[["table"]][3], 
+                                             FP = a4[["table"]][2], 
+                                             TN = a4[["table"]][1])
+
+```
+
+## 1.6 Neural Network classification
+
+```{r message=FALSE,  warning=FALSE }
+
+# Try different combinations of parameters like 
+# decay (prevents the weights from growing too large,) 
+# and size of Hidden layers
+my.grid <- expand.grid(.decay = c(0.5, 0.1), .size = c(5, 7))
+
+# stepmax is maximum steps for the training of the neural network
+# threshold is set to 0.01, meaning that if the change in error during an iteration is 
+# less than 1%, then no further optimization will be carried out by the model
+nn_clf_fit <- train(corpRatios_x_train,
+                    corpRatios_y_train,
+                    method = "nnet",
+                    trace = F,
+                    tuneGrid = my.grid,
+                    linout = 0,
+                    stepmax = 100,
+                    threshold = 0.01 )
+print(nn_clf_fit)
+
+# Plot Neural Network 
+plotnet(nn_clf_fit$finalModel, y_names = "corpRatios Type")
+
+```
+
+```{r }
+# Predict on test data
+nn_clf_predict <- predict(nn_clf_fit,corpRatios_x_test)
+```
+
+
+```{r }
+# Print Confusion matrix, Accuarcy, Sensitivity etc 
+confusionMatrix(nn_clf_predict,  corpRatios_y_test, positive = "1")
+
+# Add results into clf_results dataframe
+x5 <- confusionMatrix(nn_clf_predict,  corpRatios_y_test , positive = "1")[["overall"]]
+y5 <- confusionMatrix(nn_clf_predict,  corpRatios_y_test, positive = "1")[["byClass"]]
+
+clf_results[nrow(clf_results) + 1,] <-  list(Model = "Neural Network", 
+                                             Accuracy = round (x5[["Accuracy"]],3), 
+                                            Precision = round (y5[["Precision"]],3), 
+                                            Recall = round (y5[["Recall"]],3), 
+                                            F1 = round (y5[["F1"]],3))
+
+# Print Accuracy and F1 score
+cat("Accuarcy is ", round(x5[["Accuracy"]],3), "and F1 is ", round (y5[["F1"]],3)  )
+
+
+# Add results into cost_benefit_df dataframe for cost benefit analysis 
+a5 <- confusionMatrix(nn_clf_predict,  corpRatios_y_test)
+
+cost_benefit_df[nrow(cost_benefit_df) + 1,] <-  list(Model = "Neural Network", 
+                                             TP = a5[["table"]][4], 
+                                             FN = a5[["table"]][3], 
+                                             FP = a5[["table"]][2], 
+                                             TN = a5[["table"]][1])
+
+```
+
+**Compare Accuracy for all Classification models **
+
+```{r }
+
+print(clf_results)
+
+# Plot accuracy for all the Classification Models
+
+ggplot(clf_results %>% arrange(desc(Accuracy)) %>%
+       mutate(Model=factor(Model, levels=Model) ), 
+       aes(x = Model, y = Accuracy)) +
+  geom_bar(stat = "identity" , width=0.3, fill="steelblue") + 
+  coord_cartesian(ylim = c(0.5, 1)) +
+  geom_hline(aes(yintercept = mean(Accuracy)),
+             colour = "green",linetype="dashed") +
+  ggtitle("Compare Accuracy for all Models") +
+  theme(plot.title = element_text(color="black", size=10, hjust = 0.5))
+
+
+```
+
+## 1.8 ROC and Lift curves for all models
+
+ROC curve - It is a performance measurement for classification problem at various thresholds settings. It tells how much a model is capable of distinguishing between classes.
+
+Y axis - True Positive rate or Sensitivity  = (TP / TP + FN)
+
+X axis - False Positive rate or (1 - specificity) = (FP / TN + FP) 
+
+AUC - Area under ROC curve. Higher the AUC, better the model is at predicting 0s as 0s and 1s as 1s.
+
+Lets Plot ROC curves for all the Models. The more "up and to the left" the ROC curve of a model is, the better the model. Also, higher the Area under curve, the better the model.
+
+```{r}
+
+# Predict probabilities of each model to plot ROC curve
+
+dtree_prob <- predict(dtree_fit, newdata = corpRatios_x_test, type = "prob", positive = "1")
+XG_boost_prob <- predict(XG_clf_fit, newdata = corpRatios_x_test, type = "prob",  positive = "1")
+nn_clf_prob <- predict(nn_clf_fit, newdata = corpRatios_x_test, type = "prob",  positive = "1")
+
+# List of predictions
+#pay attention to which column of the predictions you want to pick
+#in this case its class with output = "1" ie bankruptcy
+# head(dtree_prob) #good idea to see this
+preds_list <- list( dtree_prob[,2], 
+                   glm_predict, XG_boost_prob[,2], nn_clf_prob[,2] )
+
+# List of actual values (same for all)
+m <- length(preds_list)
+actuals_list <- rep(list(corpRatios_y_test), m)
+
+# Plot the ROC curves
+pred <- prediction(preds_list, actuals_list)
+rocs <- performance(pred, "tpr", "fpr")
+
+# calculate AUC for all models
+AUC_models <- performance(pred, "auc")
+auc_dt = round(AUC_models@y.values[[1]], 3)
+auc_lr = round(AUC_models@y.values[[2]], 3)
+auc_xg = round(AUC_models@y.values[[3]], 3)
+auc_nn = round(AUC_models@y.values[[4]], 3)
+
+# Plot the ROC curves
+plot(rocs, col = as.list(1:m), main = "ROC Curves of different models")
+legend(x = "bottomright", 
+       legend = c( paste0("Decision Tree - ", auc_dt), 
+                   paste0("Logistic Regression - ", auc_lr), 
+                   paste0("XG Boost - ", auc_xg), 
+                   paste0("Neural Net - ", auc_nn)), fill = 1:m)
+
+```
+
+**Lift curve** - Lift is a measure of the effectiveness of a predictive model calculated as the ratio between the results obtained with and without the predictive model. The lift chart shows how much more likely we are to predict the correct outcome than a random guess.
+
+
+```{r}
+
+lifts <- performance(pred, "lift", "rpp")
+
+# Plot the Lift curves
+plot(lifts, col = as.list(1:m), main = "Lift Curves of Different Models")
+legend(x = "bottomleft", 
+       legend = c( "Decision Tree", 
+                   "Logistic Regression", 
+                   "XG Boost", 
+                   "Neural Net"), fill = 1:m)
+
+
+```
+# 2. LIME
+
+
+Local Interpretable Model-agnostic Explanations (LIME) is a visualization technique that helps explain individual predictions.This method is model agnostic, so it can be applied to any supervised regression or classification model
+
+First, create an “explainer” object using the lime function, which is a list that contains the ML model and the feature distributions for the training data. Note that we use the training data and Neural Net model we just trained to create the “explainer” object.
+
+```{r}
+explainer_caret  <- lime(corpRatios_x_train, nn_clf_fit, n_bins = 10)
+class(explainer_caret)
+summary(explainer_caret)
+```
+
+Once we create our lime object, we can now perform the LIME algorithm using the explain function. We create local explanations for the first two observations in the test dataset 
+
+```{r}
+
+explanation_caret  <- explain(
+  x = corpRatios_x_test[c(1,2),], 
+  explainer = explainer_caret , 
+  n_features = 10, 
+  n_labels = 1)
+
+```
+
+
+## Visualizing results
+
+There are several plotting functions provided by lime for visualization but we are only concerned with two. The most important of which is plot_features. This will create a visualization containing an individual plot for each observation (case 1, 2, …, n) in our test data. Since we specified n_features = 10 it will plot the 10 most influential variables that best explain the linear model in that observations local region and whether the variable is causes an increase in the probability (supports) or a decrease in the probability (contradicts). It also provides us with the model fit for each model (“Explanation Fit: XX”), which allows us to see how well that model explains the local region.
+
+
+```{r}
+plot_features(explanation_caret)
+```
+We can infer which has a higher likelihood of bankruptcy out of the 2 observations and which variable(s) appears to influence this high probability. 
+
+The other plot we can create is a heatmap showing how the different variables selected across all the observations influence each case. This plot becomes useful if you are trying to find common features that influence all observations or if you are performing this analysis across many observations which makes plot_features difficult to discern.
+```{r}
+plot_explanations(explanation_caret)
+```
